@@ -1,4 +1,4 @@
-import { useQuery } from '@apollo/client';
+import { useMutation, useQuery, useSubscription } from '@apollo/client';
 import styled from 'styled-components';
 import { PAGINATED_CALLS } from '../gql/queries';
 import {
@@ -9,10 +9,13 @@ import {
   Box,
   DiagonalDownOutlined,
   DiagonalUpOutlined,
-  Pagination
+  Pagination,
+  Button
 } from '@aircall/tractor';
 import { formatDate, formatDuration } from '../helpers/dates';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ARCHIVE_CALL } from '../gql/mutations';
+import { ON_UPDATED_CALL } from '../gql/subscription/updateCall';
 
 export const PaginationWrapper = styled.div`
   > div {
@@ -30,11 +33,20 @@ export const CallsListPage = () => {
   const navigate = useNavigate();
   const pageQueryParams = search.get('page');
   const activePage = !!pageQueryParams ? parseInt(pageQueryParams) : 1;
-  const { loading, error, data } = useQuery(PAGINATED_CALLS, {
+  const sizeQueryParams = search.get('size');
+  const callsPerPage = !!sizeQueryParams ? parseInt(sizeQueryParams) : CALLS_PER_PAGE;
+
+  useSubscription(ON_UPDATED_CALL);
+  const [archiveMutation] = useMutation(ARCHIVE_CALL);
+  const { loading, error, data, subscribeToMore } = useQuery(PAGINATED_CALLS, {
     variables: {
-      offset: (activePage - 1) * CALLS_PER_PAGE,
-      limit: CALLS_PER_PAGE
+      offset: (activePage - 1) * callsPerPage,
+      limit: callsPerPage
     }
+  });
+
+  subscribeToMore({
+    document: ON_UPDATED_CALL
   });
 
   if (loading) return <p>Loading calls...</p>;
@@ -47,8 +59,40 @@ export const CallsListPage = () => {
     navigate(`/calls/${callId}`);
   };
 
-  const handlePageChange = (page: number) => {
-    navigate(`/calls/?page=${page}`);
+  const handlePageChange = (page: number, size: number = callsPerPage) => {
+    let url = `/calls/?page=${page ? page : 1}`;
+    if (size !== CALLS_PER_PAGE) url += `&size=${size}`;
+
+    navigate(url);
+  };
+
+  /**
+   * Get the total sum of calls before the current page.
+   */
+  const handlePageSizeChange = (newPageSize: number) => {
+    /**
+     * The intention is to resize the lists but keeping track of the current position
+     * so the user doesn't lose track of those calls he has already viewed.
+     *
+     * That's why we add 1 to the total list to make sure we
+     * take into count the position of the very first call in the current list.
+     */
+    const prevCallsToCurrentList = (activePage - 1) * callsPerPage;
+    const newPage = (prevCallsToCurrentList + 1) / newPageSize;
+    handlePageChange(Math.ceil(newPage), newPageSize);
+  };
+
+  /**
+   * Archive/Unarchive calls
+   * @param e: HTMLButtonElement
+   * @param callId: string ex: 12345-6789
+   */
+  const handleArchive = (e: React.MouseEvent<HTMLButtonElement, MouseEvent>, callId: string) => {
+    e.stopPropagation();
+
+    archiveMutation({
+      variables: { id: callId }
+    });
   };
 
   return (
@@ -73,6 +117,7 @@ export const CallsListPage = () => {
           return (
             <Box
               key={call.id}
+              id={call.id}
               bg="black-a30"
               borderRadius={16}
               cursor="pointer"
@@ -101,8 +146,13 @@ export const CallsListPage = () => {
                   <Typography variant="caption">{date}</Typography>
                 </Box>
               </Grid>
-              <Box px={4} py={2}>
+              <Box px={4} py={2} display="flex" style={{ justifyContent: 'space-between' }}>
                 <Typography variant="caption">{notes}</Typography>
+                <Button mode="link" onClick={e => handleArchive(e, call.id)}>
+                  <Typography variant="caption">
+                    {call.is_archived ? 'unarchive' : 'archive'}
+                  </Typography>
+                </Button>
               </Box>
             </Box>
           );
@@ -113,8 +163,9 @@ export const CallsListPage = () => {
         <PaginationWrapper>
           <Pagination
             activePage={activePage}
-            pageSize={CALLS_PER_PAGE}
+            pageSize={callsPerPage}
             onPageChange={handlePageChange}
+            onPageSizeChange={handlePageSizeChange}
             recordsTotalCount={totalCount}
           />
         </PaginationWrapper>
